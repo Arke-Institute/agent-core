@@ -48,6 +48,8 @@ export interface NetworkAgentState {
   registered_at: string;
   updated_at: string;
   endpoint: string;
+  /** ISO timestamp when endpoint was verified */
+  endpoint_verified_at?: string;
 }
 
 /**
@@ -120,4 +122,24 @@ export interface ArkeCollection {
 export interface ArkeApiKey {
   key: string;
   prefix: string;
+}
+
+/**
+ * Response from POST /agents/{id}/verify (token generation)
+ */
+export interface VerifyTokenResponse {
+  verification_token: string;
+  agent_id: string;
+  endpoint: string;
+  instructions: string;
+  expires_at: string;
+}
+
+/**
+ * Response from POST /agents/{id}/verify with confirm: true
+ */
+export interface VerifyResultResponse {
+  verified: boolean;
+  verified_at?: string;
+  error?: string;
 }

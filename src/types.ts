@@ -236,6 +236,10 @@ export interface BaseAgentEnv {
   ARKE_API_BASE: string;
   AGENT_ID: string;
   AGENT_VERSION: string;
+  /** Temporary verification token used during endpoint ownership verification */
+  ARKE_VERIFY_TOKEN?: string;
+  /** Temporary agent ID used during endpoint ownership verification */
+  ARKE_VERIFY_AGENT_ID?: string;
 }
 
 // =============================================================================

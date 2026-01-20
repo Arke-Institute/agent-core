@@ -12,6 +12,8 @@ import type {
   ArkeCollection,
   ArkeApiKey,
   NetworkAgentState,
+  VerifyTokenResponse,
+  VerifyResultResponse,
 } from './types.js';
 import {
   findRepoRoot,
@@ -82,6 +84,125 @@ async function pushToWranglerSecret(
     console.warn(`  You may need to run: wrangler secret put ARKE_API_KEY --env ${wranglerEnv}`);
     return false;
   }
+}
+
+/**
+ * Push verification token and agent ID to Cloudflare worker secrets
+ */
+async function pushVerifySecretsToWrangler(
+  serviceDir: string,
+  network: Network,
+  token: string,
+  agentId: string
+): Promise<boolean> {
+  const wranglerEnv = network === 'main' ? 'production' : 'test';
+
+  try {
+    // Push verification token
+    execSync(`echo "${token}" | wrangler secret put ARKE_VERIFY_TOKEN --env ${wranglerEnv}`, {
+      cwd: serviceDir,
+      stdio: 'pipe',
+    });
+    // Push agent ID (the actual entity ID, not the human-readable name)
+    execSync(`echo "${agentId}" | wrangler secret put ARKE_VERIFY_AGENT_ID --env ${wranglerEnv}`, {
+      cwd: serviceDir,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch (error) {
+    console.warn(`  Warning: Could not push verification secrets to wrangler`);
+    return false;
+  }
+}
+
+/**
+ * Delete verification secrets from Cloudflare (cleanup after successful verification)
+ */
+async function deleteVerifySecretsFromWrangler(
+  serviceDir: string,
+  network: Network
+): Promise<boolean> {
+  const wranglerEnv = network === 'main' ? 'production' : 'test';
+
+  try {
+    execSync(`wrangler secret delete ARKE_VERIFY_TOKEN --env ${wranglerEnv} --force`, {
+      cwd: serviceDir,
+      stdio: 'pipe',
+    });
+    execSync(`wrangler secret delete ARKE_VERIFY_AGENT_ID --env ${wranglerEnv} --force`, {
+      cwd: serviceDir,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    // Not critical if this fails
+    return false;
+  }
+}
+
+/**
+ * Wait for worker deployment to be ready (health check)
+ */
+async function waitForDeployment(endpoint: string, maxWaitMs: number = 30000): Promise<boolean> {
+  const startTime = Date.now();
+  const checkInterval = 2000;
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const res = await fetch(`${endpoint}/health`, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      if (res.ok) return true;
+    } catch {
+      // Ignore errors, keep trying
+    }
+    await new Promise(resolve => setTimeout(resolve, checkInterval));
+  }
+  return false;
+}
+
+/**
+ * Request verification token from API
+ */
+async function requestVerificationToken(
+  apiUrl: string,
+  userKey: string,
+  network: Network,
+  agentId: string
+): Promise<VerifyTokenResponse> {
+  return apiRequest<VerifyTokenResponse>(
+    apiUrl,
+    userKey,
+    network,
+    'POST',
+    `/agents/${agentId}/verify`,
+    {}  // Empty body = generate token
+  );
+}
+
+/**
+ * Confirm verification (triggers API callback to agent endpoint)
+ */
+async function confirmVerification(
+  apiUrl: string,
+  userKey: string,
+  network: Network,
+  agentId: string
+): Promise<VerifyResultResponse> {
+  return apiRequest<VerifyResultResponse>(
+    apiUrl,
+    userKey,
+    network,
+    'POST',
+    `/agents/${agentId}/verify`,
+    { confirm: true }
+  );
 }
 
 /**
@@ -334,18 +455,73 @@ export async function registerAgent(options: RegisterOptions = {}): Promise<Regi
     agentKeyPrefix = existingState.agent_key_prefix;
     agentHome = existingState.agent_home;
 
+    // Check if endpoint changed (requires re-verification)
+    const endpointChanged = existingState.endpoint !== agentConfig.endpoint;
+
     console.log(`Updating existing agent: ${agentId}`);
+    if (endpointChanged) {
+      console.log(`⚠️  Endpoint changed: ${existingState.endpoint} → ${agentConfig.endpoint}`);
+      console.log('   Re-verification will be required.');
+    }
 
     try {
       await updateAgent(apiUrl, userKey, network, agentId, agentConfig);
       console.log(`✅ Agent updated: ${agentId}`);
 
-      // Update state with new timestamp
-      updateNetworkAgentState(cwd, network, {
-        ...existingState,
-        updated_at: new Date().toISOString(),
-        endpoint: agentConfig.endpoint,
-      });
+      // If endpoint changed, need to re-verify
+      if (endpointChanged) {
+        console.log('\n🔐 Re-verifying new endpoint...');
+
+        // Request new verification token
+        const verifyResponse = await requestVerificationToken(apiUrl, userKey, network, agentId);
+        console.log(`✅ Got verification token`);
+
+        // Push verification secrets to worker
+        const tokenPushed = await pushVerifySecretsToWrangler(cwd, network, verifyResponse.verification_token, agentId);
+        if (!tokenPushed) {
+          throw new Error('Could not push verification secrets to worker');
+        }
+        console.log('✅ Verification secrets pushed');
+
+        // Wait for deployment
+        console.log('Waiting for worker...');
+        const isReady = await waitForDeployment(agentConfig.endpoint);
+        if (!isReady) {
+          console.warn('⚠️  Worker health check timed out, attempting verification anyway...');
+        }
+
+        // Confirm verification
+        const verifyResult = await confirmVerification(apiUrl, userKey, network, agentId);
+        if (!verifyResult.verified) {
+          throw new Error(`Endpoint verification failed: ${verifyResult.error}`);
+        }
+        console.log(`✅ New endpoint verified`);
+
+        // Re-activate (API will have set status back to development on endpoint change)
+        const { cid } = await apiRequest<{ cid: string }>(
+          apiUrl, userKey, network, 'GET', `/entities/${agentId}/tip`
+        );
+        await activateAgent(apiUrl, userKey, network, agentId, cid);
+        console.log('✅ Agent re-activated');
+
+        // Cleanup verification secrets
+        await deleteVerifySecretsFromWrangler(cwd, network);
+
+        // Update state with new verification timestamp
+        updateNetworkAgentState(cwd, network, {
+          ...existingState,
+          updated_at: new Date().toISOString(),
+          endpoint: agentConfig.endpoint,
+          endpoint_verified_at: verifyResult.verified_at,
+        });
+      } else {
+        // No endpoint change, just update timestamp
+        updateNetworkAgentState(cwd, network, {
+          ...existingState,
+          updated_at: new Date().toISOString(),
+          endpoint: agentConfig.endpoint,
+        });
+      }
     } catch (error) {
       throw new Error(`Failed to update agent: ${error}`);
     }
@@ -377,25 +553,69 @@ export async function registerAgent(options: RegisterOptions = {}): Promise<Regi
         console.log(`✅ Saved agent home to registry`);
       }
 
-      // Create the agent
+      // Step 1: Create the agent (status: development)
       const result = await createAgent(apiUrl, userKey, network, agentConfig, agentHome);
       agentId = result.id;
-      console.log(`✅ Agent created: ${agentId}`);
-
-      // Activate agent
-      await activateAgent(apiUrl, userKey, network, agentId, result.cid);
-      console.log('✅ Agent activated');
+      console.log(`✅ Agent created: ${agentId} (status: development)`);
 
       // Add relationship from Agent Home to Agent
       await linkAgentToHome(apiUrl, userKey, network, agentHome, agentId);
       console.log('✅ Linked agent to Agent Home');
 
-      // Create API key
-      console.log('\nCreating API key...');
+      // Step 2: Request verification token
+      console.log('\n🔐 Endpoint Verification');
+      console.log('Requesting verification token...');
+      const verifyResponse = await requestVerificationToken(apiUrl, userKey, network, agentId);
+      console.log(`✅ Got verification token (expires: ${verifyResponse.expires_at})`);
+
+      // Step 3: Push verification secrets to worker
+      console.log('Pushing verification secrets to worker...');
+      const tokenPushed = await pushVerifySecretsToWrangler(cwd, network, verifyResponse.verification_token, agentId);
+      if (!tokenPushed) {
+        throw new Error(
+          'Could not push verification secrets. Run manually:\n' +
+          `  echo "${verifyResponse.verification_token}" | wrangler secret put ARKE_VERIFY_TOKEN --env ${network === 'main' ? 'production' : 'test'}\n` +
+          `  echo "${agentId}" | wrangler secret put ARKE_VERIFY_AGENT_ID --env ${network === 'main' ? 'production' : 'test'}\n` +
+          'Then run registration again.'
+        );
+      }
+      console.log('✅ Verification secrets pushed to worker');
+
+      // Step 4: Wait for deployment to propagate
+      console.log('Waiting for worker to be ready...');
+      const isReady = await waitForDeployment(agentConfig.endpoint);
+      if (!isReady) {
+        console.warn('⚠️  Worker health check timed out, attempting verification anyway...');
+      } else {
+        console.log('✅ Worker is responding');
+      }
+
+      // Step 5: Trigger verification callback
+      console.log('Verifying endpoint ownership...');
+      const verifyResult = await confirmVerification(apiUrl, userKey, network, agentId);
+
+      if (!verifyResult.verified) {
+        throw new Error(
+          `Endpoint verification failed: ${verifyResult.error}\n` +
+          `Make sure your worker is deployed at: ${agentConfig.endpoint}\n` +
+          'And that it includes the /.well-known/arke-verification endpoint.'
+        );
+      }
+      console.log(`✅ Endpoint verified at ${verifyResult.verified_at}`);
+
+      // Step 6: Activate agent (now allowed since endpoint is verified)
+      const { cid: freshCid } = await apiRequest<{ cid: string }>(
+        apiUrl, userKey, network, 'GET', `/entities/${agentId}/tip`
+      );
+      await activateAgent(apiUrl, userKey, network, agentId, freshCid);
+      console.log('✅ Agent activated');
+
+      // Step 7: Create API key
+      console.log('\n🔑 Creating API key...');
       const keyResult = await createAgentKey(apiUrl, userKey, network, agentId, networkLabel);
       agentKeyPrefix = getKeyPrefix(keyResult.key);
 
-      // Save state
+      // Save state (including verification timestamp)
       const newState: NetworkAgentState = {
         agent_id: agentId,
         agent_key_prefix: agentKeyPrefix,
@@ -403,6 +623,7 @@ export async function registerAgent(options: RegisterOptions = {}): Promise<Regi
         registered_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         endpoint: agentConfig.endpoint,
+        endpoint_verified_at: verifyResult.verified_at,
       };
       updateNetworkAgentState(cwd, network, newState);
       console.log(`✅ Saved agent state`);
@@ -411,14 +632,19 @@ export async function registerAgent(options: RegisterOptions = {}): Promise<Regi
       updateAgentKey(cwd, network, keyResult.key);
       console.log(`✅ Saved agent key`);
 
-      // Auto-push to wrangler secrets
+      // Step 8: Push agent API key to wrangler secrets
       if (!options.skipSecretPush) {
-        console.log('\nPushing to Cloudflare secrets...');
+        console.log('\nPushing API key to Cloudflare secrets...');
         secretPushed = await pushToWranglerSecret(cwd, network, keyResult.key);
         if (secretPushed) {
-          console.log(`✅ Secret pushed to wrangler (env: ${network === 'main' ? 'production' : 'test'})`);
+          console.log(`✅ API key pushed to wrangler (env: ${network === 'main' ? 'production' : 'test'})`);
         }
       }
+
+      // Step 9: Cleanup verification secrets (optional, non-critical)
+      console.log('Cleaning up verification secrets...');
+      await deleteVerifySecretsFromWrangler(cwd, network);
+      console.log('✅ Verification secrets removed');
 
       console.log('\n==========================================');
       console.log('🔑 Agent API Key:');

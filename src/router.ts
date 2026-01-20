@@ -213,6 +213,30 @@ export function createAgentRouter<TEnv extends BaseAgentEnv>(
   });
 
   // ===========================================================================
+  // GET /.well-known/arke-verification
+  // Used during agent registration to verify endpoint ownership
+  // ===========================================================================
+
+  app.get('/.well-known/arke-verification', (c) => {
+    const token = c.env.ARKE_VERIFY_TOKEN;
+    // Use ARKE_VERIFY_AGENT_ID (set during registration) or fall back to AGENT_ID
+    const agentId = c.env.ARKE_VERIFY_AGENT_ID || c.env.AGENT_ID;
+
+    if (!token) {
+      return c.json(
+        { error: 'Verification not configured' },
+        404
+      );
+    }
+
+    return c.json({
+      verification_token: token,
+      agent_id: agentId,
+      timestamp: Date.now(),
+    });
+  });
+
+  // ===========================================================================
   // Fallback
   // ===========================================================================
 
@@ -224,6 +248,7 @@ export function createAgentRouter<TEnv extends BaseAgentEnv>(
           health: 'GET /health',
           process: 'POST /process',
           status: 'GET /status/:job_id',
+          verification: 'GET /.well-known/arke-verification',
         },
       },
       404
