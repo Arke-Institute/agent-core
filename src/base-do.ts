@@ -175,8 +175,11 @@ export abstract class BaseAgentDO<
 
   /**
    * Save job state to storage.
+   * Automatically sets updated_at timestamp.
    */
   protected async saveState(state: TState): Promise<void> {
+    // Auto-set updated_at timestamp for freshness tracking
+    (state as BaseJobState).updated_at = new Date().toISOString();
     await this.ctx.storage.put(this.STATE_KEY, state);
   }
 

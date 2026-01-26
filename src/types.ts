@@ -102,6 +102,8 @@ export interface BaseJobState {
   // Timing
   started_at: string;
   completed_at?: string;
+  /** ISO timestamp of last state modification (auto-set by saveState) */
+  updated_at?: string;
 
   // Final result/error
   result?: Record<string, unknown>;
@@ -162,6 +164,8 @@ export interface BaseStatusResponse {
   error?: { code: string; message: string };
   started_at: string;
   completed_at?: string;
+  /** ISO timestamp of last state modification */
+  updated_at?: string;
 }
 
 // =============================================================================
@@ -240,6 +244,122 @@ export interface BaseAgentEnv {
   ARKE_VERIFY_TOKEN?: string;
   /** Temporary agent ID used during endpoint ownership verification */
   ARKE_VERIFY_AGENT_ID?: string;
+}
+
+// =============================================================================
+// Enhanced Status Types (for hierarchical status reporting)
+// =============================================================================
+
+/**
+ * Status of a processing stage within a multi-stage job.
+ * Used by workflows to report progress through their pipeline.
+ */
+export interface StageStatus {
+  /** Stage name (e.g., 'structure', 'description', 'resize', 'ocr') */
+  name: string;
+  /** Current status of this stage */
+  status: 'pending' | 'running' | 'done' | 'skipped' | 'error';
+  /** When the stage started processing */
+  started_at?: string;
+  /** When the stage completed */
+  completed_at?: string;
+  /** Total items to process in this stage (if applicable) */
+  items_total?: number;
+  /** Items successfully completed */
+  items_done?: number;
+  /** Items that failed */
+  items_error?: number;
+}
+
+/**
+ * Status of a dispatched sub-job (service or workflow).
+ * Used by workflows/orchestrators to track child jobs.
+ */
+export interface SubJobStatus {
+  /** Unique identifier for this sub-job */
+  id: string;
+  /** Service or workflow type (e.g., 'structure-extraction', 'text-workflow') */
+  service: string;
+  /** Entity being processed */
+  entity_id: string;
+  /** Current status */
+  status: WorkItemStatus;
+  /** Job ID returned by the sub-agent */
+  sub_job_id?: string;
+  /** Number of dispatch/poll attempts */
+  attempts: number;
+  /** When processing started */
+  started_at?: string;
+  /** When processing completed */
+  completed_at?: string;
+  /** Error message if failed */
+  error?: string;
+  /** Nested status from the sub-agent (captured during polling) */
+  service_status?: NestedServiceStatus;
+}
+
+/**
+ * Progress information from a nested operation (e.g., Lambda processing).
+ * Provides visibility into long-running sub-tasks.
+ */
+export interface NestedProgress {
+  /** Current processing phase (service-specific, e.g., 'planning', 'extracting') */
+  phase: string;
+  /** Completion percentage (0-100) */
+  percent_complete: number;
+  /** Service-specific progress details */
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Snapshot of a sub-agent's status for parent tracking.
+ * Captured when polling sub-jobs to provide nested visibility.
+ */
+export interface NestedServiceStatus {
+  /** Sub-agent's job status */
+  status: JobStatus;
+  /** Sub-agent's current phase (if applicable) */
+  phase?: string;
+  /** Sub-agent's progress counters */
+  progress?: JobProgress;
+  /** Nested progress from Lambda or further sub-tasks */
+  nested_progress?: NestedProgress;
+  /** When this status was captured */
+  updated_at: string;
+}
+
+/**
+ * Enhanced status response with optional detailed breakdowns.
+ * Extends BaseStatusResponse with hierarchical status information.
+ */
+export interface EnhancedStatusResponse extends BaseStatusResponse {
+  /** Processing stages with individual status (for multi-stage jobs) */
+  stages?: StageStatus[];
+  /** Dispatched sub-jobs with their status (for fan-out jobs) */
+  sub_jobs?: SubJobStatus[];
+  /** Nested progress from Lambda or sub-agent processing */
+  nested_progress?: NestedProgress;
+  /** Recent errors with context for debugging */
+  recent_errors?: Array<{
+    /** Identifier for the failed item */
+    id: string;
+    /** Error message */
+    message: string;
+    /** When the error occurred */
+    timestamp: string;
+    /** Additional context (e.g., entity_id, workflow type) */
+    context?: Record<string, unknown>;
+  }>;
+}
+
+/**
+ * Full status response from polling (includes all fields for nesting).
+ * Used by pollAgentStatusFull() to capture complete sub-agent status.
+ */
+export interface FullPollResponse extends EnhancedStatusResponse {
+  /** Always present in poll responses */
+  job_id: string;
+  status: JobStatus;
 }
 
 // =============================================================================

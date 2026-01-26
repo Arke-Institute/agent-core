@@ -61,6 +61,14 @@ export type {
   JobResponse,
   BaseStatusResponse,
 
+  // Enhanced Status (hierarchical status reporting)
+  StageStatus,
+  SubJobStatus,
+  NestedProgress,
+  NestedServiceStatus,
+  EnhancedStatusResponse,
+  FullPollResponse,
+
   // Signature
   SigningKeyInfo,
   VerifyResult,
@@ -121,9 +129,10 @@ export {
   dispatchToAgent,
   pollAgentStatus,
   pollAgentStatusUntilDone,
+  pollAgentStatusFull,
   PromisePool,
 } from './dispatcher';
-export type { DispatchOptions } from './dispatcher';
+export type { DispatchOptions, FullPollResult } from './dispatcher';
 
 // =============================================================================
 // Utilities

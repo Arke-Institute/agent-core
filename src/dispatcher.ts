@@ -6,7 +6,7 @@
  */
 
 import type { ArkeClient } from '@arke-institute/sdk';
-import type { DispatchResult, PollResult } from './types';
+import type { DispatchResult, PollResult, FullPollResponse, JobStatus } from './types';
 
 // =============================================================================
 // Dispatch
@@ -103,7 +103,12 @@ export async function pollAgentStatus(
     const res = await fetch(statusUrl);
 
     if (!res.ok) {
-      // Treat non-OK as still running (might be temporary issue)
+      // 404 means job not found - treat as done with error
+      // This happens when the target DO cleans up completed jobs
+      if (res.status === 404) {
+        return { done: true, status: 'error', error: 'Job not found - may have completed and been cleaned up' };
+      }
+      // Other non-OK responses: treat as still running (might be temporary issue)
       return { done: false, status: 'running' };
     }
 
@@ -165,6 +170,98 @@ export async function pollAgentStatusUntilDone(
 
   // Timeout
   return { done: false, status: 'error', error: 'Polling timeout exceeded' };
+}
+
+// =============================================================================
+// Full Status Polling (for nested status capture)
+// =============================================================================
+
+/**
+ * Result from pollAgentStatusFull, includes the complete status response.
+ */
+export interface FullPollResult {
+  /** Whether the job is complete (done or error) */
+  done: boolean;
+  /** Job status */
+  status: JobStatus;
+  /** Complete status response for nesting into parent status */
+  full_response: FullPollResponse;
+  /** Error message if status is error */
+  error?: string;
+}
+
+/**
+ * Poll an agent's status endpoint and return the full response.
+ *
+ * Use this when you need to capture the complete sub-agent status
+ * for nesting into a parent status response (e.g., orchestrator
+ * capturing workflow status, workflow capturing service status).
+ *
+ * @param endpoint - Agent's base endpoint URL
+ * @param jobId - The sub-job ID to check
+ * @returns FullPollResult with complete status response for nesting
+ */
+export async function pollAgentStatusFull(
+  endpoint: string,
+  jobId: string
+): Promise<FullPollResult> {
+  const statusUrl = `${endpoint}/status/${jobId}`;
+
+  try {
+    const res = await fetch(statusUrl);
+
+    if (!res.ok) {
+      // 404 means job not found - may have completed and been cleaned up
+      if (res.status === 404) {
+        return {
+          done: true,
+          status: 'error',
+          error: 'Job not found - may have completed and been cleaned up',
+          full_response: {
+            job_id: jobId,
+            status: 'error',
+            progress: { total: 0, pending: 0, done: 0, error: 1 },
+            error: { code: 'NOT_FOUND', message: 'Job not found' },
+            started_at: new Date().toISOString(),
+          },
+        };
+      }
+      // Other non-OK responses: treat as still running
+      return {
+        done: false,
+        status: 'running',
+        full_response: {
+          job_id: jobId,
+          status: 'running',
+          progress: { total: 0, pending: 0, done: 0, error: 0 },
+          started_at: new Date().toISOString(),
+        },
+      };
+    }
+
+    const data = (await res.json()) as FullPollResponse;
+
+    const isDone = data.status === 'done' || data.status === 'error';
+
+    return {
+      done: isDone,
+      status: data.status,
+      full_response: data,
+      error: data.error?.message,
+    };
+  } catch (err) {
+    // Network error, treat as still running
+    return {
+      done: false,
+      status: 'running',
+      full_response: {
+        job_id: jobId,
+        status: 'running',
+        progress: { total: 0, pending: 0, done: 0, error: 0 },
+        started_at: new Date().toISOString(),
+      },
+    };
+  }
 }
 
 // =============================================================================
