@@ -2,10 +2,12 @@
  * Base Durable Object class for Arke agents
  *
  * Provides common functionality for all agent types:
- * - State management via DO storage
+ * - State management via SQLite storage (_agent_kv table)
  * - Alarm-based processing
  * - Request routing (start/status)
  * - Error handling and recovery
+ *
+ * Requires SQLite-backed Durable Objects (new_sqlite_classes in wrangler.jsonc).
  *
  * Subclasses implement:
  * - handleStart(): Initialize job state
@@ -35,7 +37,7 @@ import { JobLogger } from './logger';
  * Handles common patterns:
  * - fetch() routes to handleStart() or handleStatus()
  * - alarm() calls processAlarm() with error recovery
- * - State and alarm state management via storage API
+ * - State and alarm state management via SQLite (_agent_kv table)
  *
  * @template TState - Job state type (extends BaseJobState)
  * @template TEnv - Environment type (extends BaseAgentEnv)
@@ -52,8 +54,27 @@ export abstract class BaseAgentDO<
   protected readonly STATE_KEY = 'state';
   protected readonly ALARM_STATE_KEY = 'alarm_state';
 
+  // SQLite schema initialization flag
+  private _schemaInit = false;
+
   constructor(ctx: DurableObjectState, env: TEnv) {
     super(ctx, env);
+  }
+
+  // ===========================================================================
+  // SQLite Schema
+  // ===========================================================================
+
+  /**
+   * Ensure the _agent_kv table exists in SQLite storage.
+   * Safe to call multiple times -- uses IF NOT EXISTS and an in-memory flag.
+   */
+  private ensureSchema(): void {
+    if (this._schemaInit) return;
+    this.ctx.storage.sql.exec(
+      'CREATE TABLE IF NOT EXISTS _agent_kv (key TEXT PRIMARY KEY, value TEXT)'
+    );
+    this._schemaInit = true;
   }
 
   // ===========================================================================
@@ -163,45 +184,69 @@ export abstract class BaseAgentDO<
   }
 
   // ===========================================================================
-  // State Management
+  // State Management (SQLite-backed)
   // ===========================================================================
 
   /**
-   * Get current job state from storage.
+   * Get current job state from SQLite storage.
    */
   protected async getState(): Promise<TState | undefined> {
-    return this.ctx.storage.get<TState>(this.STATE_KEY);
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec('SELECT value FROM _agent_kv WHERE key = ?', this.STATE_KEY)
+      .toArray();
+    if (rows.length === 0) return undefined;
+    return JSON.parse(rows[0].value as string) as TState;
   }
 
   /**
-   * Save job state to storage.
+   * Save job state to SQLite storage.
    * Automatically sets updated_at timestamp.
    */
   protected async saveState(state: TState): Promise<void> {
     // Auto-set updated_at timestamp for freshness tracking
     (state as BaseJobState).updated_at = new Date().toISOString();
-    await this.ctx.storage.put(this.STATE_KEY, state);
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      'INSERT OR REPLACE INTO _agent_kv (key, value) VALUES (?, ?)',
+      this.STATE_KEY,
+      JSON.stringify(state)
+    );
   }
 
   /**
-   * Get alarm state from storage.
+   * Get alarm state from SQLite storage.
    */
   protected async getAlarmState(): Promise<AlarmState | undefined> {
-    return this.ctx.storage.get<AlarmState>(this.ALARM_STATE_KEY);
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec('SELECT value FROM _agent_kv WHERE key = ?', this.ALARM_STATE_KEY)
+      .toArray();
+    if (rows.length === 0) return undefined;
+    return JSON.parse(rows[0].value as string) as AlarmState;
   }
 
   /**
-   * Save alarm state to storage.
+   * Save alarm state to SQLite storage.
    */
   protected async saveAlarmState(alarmState: AlarmState): Promise<void> {
-    await this.ctx.storage.put(this.ALARM_STATE_KEY, alarmState);
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      'INSERT OR REPLACE INTO _agent_kv (key, value) VALUES (?, ?)',
+      this.ALARM_STATE_KEY,
+      JSON.stringify(alarmState)
+    );
   }
 
   /**
-   * Clear alarm state from storage.
+   * Clear alarm state from SQLite storage.
    */
   protected async clearAlarmState(): Promise<void> {
-    await this.ctx.storage.delete(this.ALARM_STATE_KEY);
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      'DELETE FROM _agent_kv WHERE key = ?',
+      this.ALARM_STATE_KEY
+    );
   }
 
   // ===========================================================================
