@@ -253,6 +253,18 @@ async function createAgent(
     body.uses_agents = config.uses_agents;
   }
 
+  if (config.output_description) {
+    body.output_description = config.output_description;
+  }
+
+  if (config.output_tree_example) {
+    body.output_tree_example = config.output_tree_example;
+  }
+
+  if (config.output_relationships) {
+    body.output_relationships = config.output_relationships;
+  }
+
   return apiRequest<{ id: string; cid: string }>(
     apiUrl,
     userKey,
@@ -333,13 +345,27 @@ async function updateAgent(
     apiUrl, userKey, network, 'GET', `/entities/${agentId}/tip`
   );
 
+  const properties: Record<string, unknown> = {
+    label: config.label,
+    description: config.description,
+    endpoint: config.endpoint,
+  };
+
+  if (config.output_description) {
+    properties.output_description = config.output_description;
+  }
+
+  if (config.output_tree_example) {
+    properties.output_tree_example = config.output_tree_example;
+  }
+
+  if (config.output_relationships) {
+    properties.output_relationships = config.output_relationships;
+  }
+
   const body: Record<string, unknown> = {
     expect_tip: cid,
-    properties: {
-      label: config.label,
-      description: config.description,
-      endpoint: config.endpoint,
-    },
+    properties,
   };
 
   // Also update actions_required and input_schema if they exist

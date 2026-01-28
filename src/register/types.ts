@@ -18,6 +18,9 @@ export interface AgentConfig {
     stage: string;
     agent_id: string;
   }>;
+  output_description?: string;
+  output_tree_example?: string;
+  output_relationships?: string[];
 }
 
 /**
