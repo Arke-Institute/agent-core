@@ -125,16 +125,16 @@ async function updateCollectionWithContains(
   collectionId: string,
   fileId: string
 ): Promise<{ success: boolean; error?: string }> {
-  const maxRetries = 5;
+  const maxRetries = 7;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      // Get current collection CID
-      const { data: collection } = await client.api.GET('/collections/{id}', {
+      // Use lightweight tip endpoint for CAS
+      const { data: tip } = await client.api.GET('/entities/{id}/tip', {
         params: { path: { id: collectionId } },
       });
 
-      if (!collection) {
+      if (!tip) {
         console.error(`[logger] Job collection not found: ${collectionId}`);
         return { success: false, error: 'Job collection not found' };
       }
@@ -143,7 +143,7 @@ async function updateCollectionWithContains(
       const { error: updateError } = await client.api.PUT('/collections/{id}', {
         params: { path: { id: collectionId } },
         body: {
-          expect_tip: collection.cid,
+          expect_tip: tip.cid,
           relationships_add: [
             { predicate: 'contains', peer: fileId, peer_type: 'file' },
           ],
@@ -156,8 +156,8 @@ async function updateCollectionWithContains(
         const errorStr = JSON.stringify(updateError);
         if (errorStr.includes('409') || errorStr.includes('Conflict')) {
           if (attempt < maxRetries - 1) {
-            const delay = Math.pow(2, attempt) * 100 + Math.random() * 100;
-            console.log(`[logger] CAS conflict, retrying in ${delay}ms...`);
+            const delay = Math.pow(2, attempt) * 200 + Math.random() * 200;
+            console.log(`[logger] CAS conflict, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})...`);
             await sleep(delay);
             continue;
           }
@@ -176,7 +176,7 @@ async function updateCollectionWithContains(
         err
       );
       if (attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt) * 100 + Math.random() * 100;
+        const delay = Math.pow(2, attempt) * 200 + Math.random() * 200;
         await sleep(delay);
       }
     }

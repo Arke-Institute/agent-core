@@ -1,6 +1,6 @@
 {
   "name": "@arke-institute/agent-core",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Shared infrastructure for Arke agents - Durable Objects, routing, logging, and utilities",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
     "src"
   ],
   "dependencies": {
-    "@arke-institute/sdk": "^2.3.5",
+    "@arke-institute/sdk": "^2.6.2",
     "@noble/ed25519": "^2.2.3",
     "hono": "^4.7.4"
   },

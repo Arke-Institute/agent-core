@@ -305,8 +305,8 @@ export interface SubJobStatus {
 export interface NestedProgress {
   /** Current processing phase (service-specific, e.g., 'planning', 'extracting') */
   phase: string;
-  /** Completion percentage (0-100) */
-  percent_complete: number;
+  /** Completion percentage (0-100). Optional - omit if not meaningfully calculable. */
+  percent_complete?: number;
   /** Service-specific progress details */
   details?: Record<string, unknown>;
 }
