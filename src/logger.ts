@@ -119,13 +119,19 @@ export async function writeJobLog(
 
 /**
  * Update collection to add "contains" relationship with CAS retry.
+ * Optimized for high concurrency scenarios (500+ simultaneous updates).
  */
 async function updateCollectionWithContains(
   client: ArkeClient,
   collectionId: string,
   fileId: string
 ): Promise<{ success: boolean; error?: string }> {
-  const maxRetries = 7;
+  const maxRetries = 10; // Increased from 7 for high concurrency scenarios
+
+  // Initial random delay (0-2000ms) to spread out concurrent updates
+  // This helps when 500+ instances finish around the same time
+  const initialDelay = Math.random() * 2000;
+  await sleep(initialDelay);
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -152,11 +158,13 @@ async function updateCollectionWithContains(
       });
 
       if (updateError) {
-        // Check if it's a CAS conflict
+        // Check if it's a CAS conflict (broader pattern matching)
         const errorStr = JSON.stringify(updateError);
-        if (errorStr.includes('409') || errorStr.includes('Conflict')) {
+        if (errorStr.includes('409') || errorStr.includes('Conflict') ||
+            errorStr.includes('cas') || errorStr.includes('expect_tip')) {
           if (attempt < maxRetries - 1) {
-            const delay = Math.pow(2, attempt) * 200 + Math.random() * 200;
+            // Increased jitter (0-1000ms) to better spread retry attempts
+            const delay = Math.pow(2, attempt) * 200 + Math.random() * 1000;
             console.log(`[logger] CAS conflict, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})...`);
             await sleep(delay);
             continue;
@@ -172,11 +180,12 @@ async function updateCollectionWithContains(
       return { success: true };
     } catch (err) {
       console.error(
-        `[logger] Error updating collection (attempt ${attempt + 1}):`,
+        `[logger] Error updating collection (attempt ${attempt + 1}/${maxRetries}):`,
         err
       );
       if (attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt) * 200 + Math.random() * 200;
+        // Increased jitter (0-1000ms) for exception retries as well
+        const delay = Math.pow(2, attempt) * 200 + Math.random() * 1000;
         await sleep(delay);
       }
     }
